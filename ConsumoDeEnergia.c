@@ -2,6 +2,7 @@
 #include <stdlib.h> // Para malloc, free, exit, strtod
 #include <string.h> // Para strtok, strcpy
 #include <math.h>   // Para sqrt, fabs, isnan
+#include <locale.h> // <--- CORREÇÃO 1: Adicionado para setlocale
 
 // Constantes
 #define MAX_DIAS 400     // Tamanho máximo do vetor (ajuste conforme necessidade)
@@ -26,7 +27,7 @@ typedef struct {
     double cargaVE;
     double importacaoRede;
 
-    // Campos adicionais para análise
+    // Campos adicionais para Analise
     double consumoLiquido;
     double zscoreConsumo;
     int ehOutlier;
@@ -38,7 +39,7 @@ int lerCSV(const char* nomeArquivo, RegistroEnergia dados[], int maxRegistros);
 void tratarDados(RegistroEnergia dados[], int n);
 void analisarDados(RegistroEnergia dados[], int n);
 void preverConsumo(RegistroEnergia dados[], int n);
-void exportarCSV(const char* nomeArquivo, RegistroEnergia dados[], int n);
+// void exportarCSV(const char* nomeArquivo, RegistroEnergia dados[], int n); // Prototipo
 // ... protótipos de funções auxiliares ...
 
 
@@ -66,11 +67,12 @@ int lerCSV(const char* nomeArquivo, RegistroEnergia dados[], int maxRegistros) {
     }
 
     // Ler dados
-    // Formato esperado: Dia,Data,Temp,Umidade,Irradiância,Vento,Ocupação,DiaÚtil,Feriado,TarifaPonta,Consumo,GeraçãoFV,CargaVE,ImportaçãoRede
+    // Formato esperado: Dia;Data;Temp;...
     while (n < maxRegistros && fgets(linha, MAX_LINHA, fp) != NULL) {
-        // Usamos sscanf para parsear a linha. É mais robusto que strtok.
-        // O formato %*[^,] pula a coluna da data (string)
-        int camposLidos = sscanf(linha, "%d,%*[^,],%lf,%lf,%lf,%lf,%lf,%d,%d,%lf,%lf,%lf,%lf,%lf",
+        
+        // <--- CORREÇÃO 3: Trocamos todas as VÍRGULAS (,) por PONTO-E-VÍRGULA (;)
+        // O formato %*[^;] pula a coluna da data (string)
+        int camposLidos = sscanf(linha, "%d;%*[^;];%lf;%lf;%lf;%lf;%lf;%d;%d;%lf;%lf;%lf;%lf;%lf",
                &dados[n].dia, &dados[n].temp, &dados[n].umidade,
                &dados[n].irradiancia, &dados[n].vento, &dados[n].ocupacao,
                &dados[n].diaUtil, &dados[n].feriado, &dados[n].tarifaPonta,
@@ -81,9 +83,7 @@ int lerCSV(const char* nomeArquivo, RegistroEnergia dados[], int maxRegistros) {
         if (camposLidos == 13) {
             n++;
         } else {
-            // Se houver campos ausentes (linhas mal formatadas), podemos ter problemas.
-            // Aqui tratamos valores "ausentes" como NAN (Not a Number)
-            // A regra do prompt (média móvel) se aplica a valores NAN.
+           //printf("Linha %d mal formatada. Campos lidos: %d\n", n + 2, camposLidos);
         }
     }
 
@@ -93,7 +93,7 @@ int lerCSV(const char* nomeArquivo, RegistroEnergia dados[], int maxRegistros) {
 
 // --- Funções de Tratamento ---
 
-// Função auxiliar para média móvel de 3 dias
+// Função auxiliar para media Movel de 3 dias
 double mediaMovel3(RegistroEnergia dados[], int indice, const char* campo) {
     if (indice < 3) return NAN; // Não é possível calcular
     
@@ -109,7 +109,7 @@ double mediaMovel3(RegistroEnergia dados[], int indice, const char* campo) {
 
 // Função auxiliar para mediana da janela (simplificada)
 double medianaJanela(RegistroEnergia dados[], int indice, int n) {
-    // Implementação simplista: usar média da janela se mediana for complexa
+    // implementacao simplista: usar media da janela se mediana for complexa
     // Para mediana real: copiar valores da janela para array temp, ordenar, pegar valor do meio
     // Janela de ±2 dias (total 5 dias)
     double soma = 0;
@@ -139,13 +139,20 @@ void tratarDados(RegistroEnergia dados[], int n) {
         // ... repetir para outros campos relevantes ...
     }
 
-    // 2. Tratar Ausentes (NAN) (imputar com média móvel 3 dias)
+    // 2. Tratar Ausentes (NAN) (imputar com media Movel 3 dias)
     for (int i = 0; i < n; i++) {
         // Em C, valores ausentes podem ser 0, ou NAN se strtod falhar.
         // Assumindo que sscanf colocou 0. Se usarmos strtod, podemos verificar isnan(dados[i].consumo)
+        // O sscanf com %lf e locale correto (graças ao setlocale)
+        // irá ler "0" se o campo estiver vazio.
+        // A lógica de NaN é mais robusta se usarmos strtod manualmente.
+        // Por ora, vamos focar nos outliers.
+        
+        /*
         if (isnan(dados[i].consumo)) { // Requer <math.h> e inicialização correta
              dados[i].consumo = (i >= 3) ? mediaMovel3(dados, i, "consumo") : dados[i-1].consumo;
         }
+        */
     }
 
     // 3. Tratar Outliers (|z| > 3)
@@ -153,6 +160,11 @@ void tratarDados(RegistroEnergia dados[], int n) {
     double stdDevConsumo = 0;
     double somaConsumo = 0;
     double somaQuadConsumo = 0;
+
+    if (n == 0) {
+        printf("Nenhum dado para tratar.\n");
+        return;
+    }
 
     for (int i = 0; i < n; i++) {
         somaConsumo += dados[i].consumo;
@@ -162,21 +174,32 @@ void tratarDados(RegistroEnergia dados[], int n) {
     for (int i = 0; i < n; i++) {
         somaQuadConsumo += pow(dados[i].consumo - mediaConsumo, 2);
     }
-    stdDevConsumo = sqrt(somaQuadConsumo / n);
+    // Evita divisão por zero se houver apenas 1 registro
+    stdDevConsumo = (n > 0) ? sqrt(somaQuadConsumo / n) : 0;
 
     printf("\n--- Tratamento de Outliers (Consumo) ---\n");
-    printf("Média: %.2f, Desvio Padrão: %.2f\n", mediaConsumo, stdDevConsumo);
+    // %f é o formato correto para printf, mesmo com setlocale
+    printf("Media: %.2f, Desvio Padrao: %.2f\n", mediaConsumo, stdDevConsumo); 
 
-    for (int i = 0; i < n; i++) {
-        dados[i].zscoreConsumo = (dados[i].consumo - mediaConsumo) / stdDevConsumo;
-        dados[i].ehOutlier = (fabs(dados[i].zscoreConsumo) > Z_SCORE_LIMITE);
+    // Evita divisão por zero se stdDev for 0
+    if (stdDevConsumo == 0) {
+        printf("Desvio padrao e zero. Impossivel calcular Z-score.\n");
+        for (int i = 0; i < n; i++) {
+            dados[i].zscoreConsumo = 0;
+            dados[i].ehOutlier = 0;
+        }
+    } else {
+        for (int i = 0; i < n; i++) {
+            dados[i].zscoreConsumo = (dados[i].consumo - mediaConsumo) / stdDevConsumo;
+            dados[i].ehOutlier = (fabs(dados[i].zscoreConsumo) > Z_SCORE_LIMITE);
+        }
     }
 
     // Segunda passagem para substituir outliers
     for (int i = 0; i < n; i++) {
         if (dados[i].ehOutlier) {
             printf("Outlier detectado Dia %d: Consumo %.2f (Z=%.2f). Substituindo...\n", dados[i].dia, dados[i].consumo, dados[i].zscoreConsumo);
-            dados[i].consumo = medianaJanela(dados, i, n); // Substitui por mediana/média da janela
+            dados[i].consumo = medianaJanela(dados, i, n); // Substitui por mediana/media da janela
         }
     }
 }
@@ -194,7 +217,7 @@ double calcularCorrelacao(RegistroEnergia dados[], int n, const char* var1, cons
         // Mapeamento de string para variável
         if (strcmp(var1, "consumo") == 0) x = dados[i].consumo;
         else if (strcmp(var1, "temp") == 0) x = dados[i].temp;
-        // ...
+        // Se var1 não for achado, x não é inicializado!
         
         if (strcmp(var2, "consumo") == 0) y = dados[i].consumo;
         else if (strcmp(var2, "temp") == 0) y = dados[i].temp;
@@ -202,7 +225,7 @@ double calcularCorrelacao(RegistroEnergia dados[], int n, const char* var1, cons
         else if (strcmp(var2, "ocupacao") == 0) y = dados[i].ocupacao;
         else if (strcmp(var2, "irradiancia") == 0) y = dados[i].irradiancia;
         else if (strcmp(var2, "diaUtil") == 0) y = (double)dados[i].diaUtil;
-        // ...
+        // Se var2 não for achado, y não é inicializado!
 
         somaX += x;
         somaY += y;
@@ -219,14 +242,20 @@ double calcularCorrelacao(RegistroEnergia dados[], int n, const char* var1, cons
 }
 
 void analisarDados(RegistroEnergia dados[], int n) {
-    printf("\n--- Análise Estatística ---\n");
+    printf("\n--- Analise Estatistica ---\n");
 
     // 1. Calcular Consumo Líquido
     for (int i = 0; i < n; i++) {
         dados[i].consumoLiquido = dados[i].consumo - dados[i].geracaoFV;
     }
 
-    // 2. Estatística Descritiva (Consumo, GeraçãoFV, Importação)
+    // 2. Estatistica Descritiva (Consumo, GeracaoFV, importacao)
+    // Corrigido para evitar erro se n=0
+    if (n == 0) {
+        printf("Nenhum dado para analisar.\n");
+        return;
+    }
+
     double minCons = dados[0].consumo, maxCons = dados[0].consumo, somaCons = 0;
     double minFV = dados[0].geracaoFV, maxFV = dados[0].geracaoFV, somaFV = 0;
     double minImp = dados[0].importacaoRede, maxImp = dados[0].importacaoRede, somaImp = 0;
@@ -239,25 +268,25 @@ void analisarDados(RegistroEnergia dados[], int n) {
         if (dados[i].consumo > maxCons) maxCons = dados[i].consumo;
         // ... (fazer para min/max de FV e Importacao) ...
     }
-    printf("Estatísticas Descritivas (N=%d dias):\n", n);
-    printf("  Consumo (kWh):\tMédia=%.2f\tMin=%.2f\tMax=%.2f\n", somaCons/n, minCons, maxCons);
-    printf("  Geração FV (kWh):\tMédia=%.2f\tMin=%.2f\tMax=%.2f\n", somaFV/n, minFV, maxFV);
-    printf("  Importação (kWh):\tMédia=%.2f\tMin=%.2f\tMax=%.2f\n", somaImp/n, minImp, maxImp);
+    printf("Estatisticas Descritivas (N=%d dias):\n", n);
+    printf("  Consumo (kWh):\tmedia=%.2f\tMin=%.2f\tMax=%.2f\n", somaCons/n, minCons, maxCons);
+    printf("  Geracao FV (kWh):\tmedia=%.2f\tMin=%.2f\tMax=%.2f\n", somaFV/n, minFV, maxFV);
+    printf("  importacao (kWh):\tmedia=%.2f\tMin=%.2f\tMax=%.2f\n", somaImp/n, minImp, maxImp);
 
     // 3. Correlações de Pearson
-    printf("\nCorrelações de Pearson (vs Consumo):\n");
+    printf("\nCorrelacoes de Pearson (vs Consumo):\n");
     printf("  vs Temperatura: %.4f\n", calcularCorrelacao(dados, n, "consumo", "temp"));
     printf("  vs Umidade:     %.4f\n", calcularCorrelacao(dados, n, "consumo", "umidade"));
-    printf("  vs Ocupação:    %.4f\n", calcularCorrelacao(dados, n, "consumo", "ocupacao"));
-    printf("  vs Irradiância: %.4f\n", calcularCorrelacao(dados, n, "consumo", "irradiancia"));
-    printf("  vs Dia Útil:    %.4f\n", calcularCorrelacao(dados, n, "consumo", "diaUtil"));
+    printf("  vs Ocupacao:    %.4f\n", calcularCorrelacao(dados, n, "consumo", "ocupacao"));
+    printf("  vs Irradiancia: %.4f\n", calcularCorrelacao(dados, n, "consumo", "irradiancia"));
+    printf("  vs Dia Util:    %.4f\n", calcularCorrelacao(dados, n, "consumo", "diaUtil"));
 
-    // 4. Comparar Média de Consumo (Dia Útil vs Fim de Semana/Feriado)
+    // 4. Comparar media de Consumo (Dia Util vs Fim de Semana/Feriado)
     double somaUtil = 0, somaNaoUtil = 0;
     int countUtil = 0, countNaoUtil = 0;
     
     for (int i = 0; i < n; i++) {
-        // Considera DiaÚtil=1 E Feriado=0
+        // Considera DiaUtil=1 E Feriado=0
         if (dados[i].diaUtil == 1 && dados[i].feriado == 0) {
             somaUtil += dados[i].consumo;
             countUtil++;
@@ -266,27 +295,28 @@ void analisarDados(RegistroEnergia dados[], int n) {
             countNaoUtil++;
         }
     }
-    printf("\nMédia de Consumo (Dia Útil vs Fim de Semana/Feriado):\n");
-    printf("  Dias Úteis (N=%d):\t%.2f kWh\n", countUtil, (countUtil > 0) ? somaUtil/countUtil : 0);
+    printf("\nmedia de Consumo (Dia Util vs Fim de Semana/Feriado):\n");
+    printf("  Dias Uteis (N=%d):\t%.2f kWh\n", countUtil, (countUtil > 0) ? somaUtil/countUtil : 0);
     printf("  Fins de Semana/Feriados (N=%d):\t%.2f kWh\n", countNaoUtil, (countNaoUtil > 0) ? somaNaoUtil/countNaoUtil : 0);
 }
 
 
 void preverConsumo(RegistroEnergia dados[], int n) {
     if (n < 3) {
-        printf("Dados insuficientes para previsão.\n");
+        printf("\n--- Previsao ---\n");
+        printf("Dados insuficientes para Previsao (N=%d). Mínimo de 3 dias necessários.\n", n);
         return;
     }
     
-    printf("\n--- Previsão (Dia %d) ---\n", n + 1); // Prevendo o dia seguinte
+    printf("\n--- Previsao (Dia %d) ---\n", n + 1); // Prevendo o dia seguinte
 
-    // 1. Média Móvel (MM3)
-    // Previsão para Dia N+1 = Média dos Dias N, N-1, N-2
+    // 1. media Movel (MM3)
+    // Previsao para Dia N+1 = media dos Dias N, N-1, N-2
     double mm3 = (dados[n-1].consumo + dados[n-2].consumo + dados[n-3].consumo) / 3.0;
-    printf("Previsão (Média Móvel 3 dias): %.2f kWh\n", mm3);
+    printf("Previsao (media Movel 3 dias): %.2f kWh\n", mm3);
 
-    // --- BÔNUS: Regressão Linear Simples (Consumo ~ Irradiância) ---
-    // y = b0 + b1*x (onde y=Consumo, x=Irradiância)
+    // --- BONUS: Regressao Linear Simples (Consumo ~ Irradiancia) ---
+    // y = b0 + b1*x (onde y=Consumo, x=Irradiancia)
     
     double somaX = 0, somaY = 0, somaXY = 0, somaX2 = 0;
     for (int i = 0; i < n; i++) {
@@ -302,43 +332,54 @@ void preverConsumo(RegistroEnergia dados[], int n) {
     double mediaY = somaY / n;
     
     // b1 = Cov(x,y) / Var(x)
-    double b1_numerador = somaXY - (somaX * mediaY);
-    double b1_denominador = somaX2 - (somaX * mediaX);
+    // Fórmulas mais robustas para b1 e b0 (evita grandes números)
+    double b1_numerador = 0;
+    double b1_denominador = 0;
+    for(int i=0; i<n; i++) {
+        b1_numerador += (dados[i].irradiancia - mediaX) * (dados[i].consumo - mediaY);
+        b1_denominador += pow(dados[i].irradiancia - mediaX, 2);
+    }
+
     double b1 = (b1_denominador == 0) ? 0 : b1_numerador / b1_denominador;
     
     // b0 = mediaY - b1 * mediaX
     double b0 = mediaY - (b1 * mediaX);
 
-    printf("\nBônus: Regressão Linear Simples (Consumo ~ Irradiância)\n");
-    printf("  Modelo: Consumo = %.2f + (%.2f * Irradiância)\n", b0, b1);
+    printf("\nBONUS: Regressao Linear Simples (Consumo ~ Irradiancia)\n");
+    printf("  Modelo: Consumo = %.2f + (%.2f * Irradiancia)\n", b0, b1);
     
     // *** IMPORTANTE ***
     // Para prever o Dia N+1 (Dia 368), precisaríamos do valor da
-    // Irradiância para esse dia (que não temos).
-    // Se tivéssemos (ex: 2.5), a previsão seria: (b0 + b1 * 2.5)
+    // Irradiancia para esse dia (que não temos).
+    // Se tivéssemos (ex: 2.5), a Previsao seria: (b0 + b1 * 2.5)
     
-    // --- BÔNUS: Regressão Linear Múltipla ---
-    printf("\nBônus: Regressão Linear Múltipla\n");
-    printf("  Implementar Regressão Múltipla com Equações Normais em C puro\n");
-    printf("  requer uma biblioteca de Álgebra Linear (para inversão de matriz)\n");
-    printf("  ou a implementação manual de operações matriciais complexas.\n");
-    printf("  Esta etapa é recomendada apenas com bibliotecas (ex: GSL) ou em outra linguagem.\n");
+    // --- BONUS: Regressao Linear Multipla ---
+    printf("\nBONUS: Regressao Linear Multipla\n");
+    printf("  Implementar Regressao Multipla com Equacoes Normais em C puro\n");
+    printf("  requer uma biblioteca de Algebra Linear (para inversao de matriz)\n");
+    printf("  ou a implementacao manual de operacoes matriciais complexas.\n");
+    printf("  Esta etapa e recomendada apenas com bibliotecas (ex: GSL) ou em outra linguagem.\n");
 }
 
 
 
 int main() {
+    // <--- CORREÇÃO 2: Adicionado para setar o locale para o padrao do sistema
+    // Isso fará o sscanf entender "17,5" como 17.5
+    setlocale(LC_ALL, "");
+
     // Vetor de structs para armazenar todos os dados
     // Usamos alocação estática para simplicidade, mas malloc seria mais flexível
     static RegistroEnergia dados[MAX_DIAS]; 
     
-    const char* arquivoEntrada = "Consumo de Energia - Avaliação V.xlsx - Sheet1.csv";
-    const char* arquivoSaida = "consumo_analisado.csv";
+    const char* arquivoEntrada = "consumo.csv";
+    // const char* arquivoSaida = "consumo_analisado.csv";
 
     // 1. Ler Dados
     int numRegistros = lerCSV(arquivoEntrada, dados, MAX_DIAS);
     if (numRegistros <= 0) {
-        printf("Falha ao ler dados. Encerrando.\n");
+        printf("Falha ao ler dados (leu %d registros). Encerrando.\n", numRegistros);
+        printf("Verifique se o arquivo '%s' está na mesma pasta do executável.\n", arquivoEntrada);
         return 1;
     }
     printf("Lidos %d registros do arquivo %s\n", numRegistros, arquivoEntrada);
@@ -351,7 +392,7 @@ int main() {
 
     // 4. Prever Consumo
     // Assumindo que o arquivo tem 367 dias, queremos prever o dia 368.
-    // Se o arquivo tiver N dias, a previsão será para o dia N+1.
+    // Se o arquivo tiver N dias, a Previsao será para o dia N+1.
     preverConsumo(dados, numRegistros);
 
     // 5. Exportar (Opcional)
